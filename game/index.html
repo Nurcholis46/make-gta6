@@ -3,16 +3,103 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>Sunset Bay — Open World Crime</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a1210; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
+  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; }
+  .panel { background: rgba(12, 10, 14, 0.62); border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 10px; backdrop-filter: blur(2px); }
+  #topleft { position: absolute; top: 14px; left: 14px; padding: 10px 14px; min-width: 210px; }
+  #stars { font-size: 22px; letter-spacing: 3px; color: #ffd75e; text-shadow: 0 0 8px rgba(255, 190, 60, 0.8); line-height: 1; }
+  #stars .off { color: rgba(255, 255, 255, 0.25); text-shadow: none; }
+  #cash { font-size: 26px; font-weight: 800; color: #7dff9a; margin-top: 4px; }
+  #healthwrap { margin-top: 8px; height: 10px; background: rgba(255,255,255,0.18); border-radius: 5px; overflow: hidden; }
+  #health { height: 100%; width: 100%; background: linear-gradient(90deg, #37d67a, #a5ff6e); }
+  #health.low { background: linear-gradient(90deg, #ff5347, #ff9a3d); }
+  #minimapwrap { position: absolute; top: 14px; right: 14px; padding: 6px; }
+  #minimap { display: block; border-radius: 6px; }
+  #objective { position: absolute; left: 14px; bottom: 14px; padding: 10px 14px; max-width: 340px; }
+  #objective h2 { margin: 0 0 2px; font-size: 15px; color: #ffd75e; letter-spacing: 0.5px; }
+  #objective p { margin: 0; font-size: 14px; line-height: 1.35; }
+  #objective .dist { color: #9fd8ff; font-weight: 700; }
+  #speedo { position: absolute; right: 14px; bottom: 14px; padding: 8px 14px; text-align: right; }
+  #speed { font-size: 30px; font-weight: 800; line-height: 1; }
+  #speed small { font-size: 13px; font-weight: 600; color: #cfc8bd; }
+  #vehiclename { font-size: 13px; color: #ffd75e; font-weight: 700; }
+  #message { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); padding: 8px 18px; font-size: 16px; font-weight: 700; text-align: center; opacity: 0; transition: opacity 0.25s; white-space: nowrap; }
+  #message.show { opacity: 1; }
+  #prompt { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); padding: 8px 16px; font-size: 15px; font-weight: 700; display: none; }
+  #prompt.show { display: block; }
+  #prompt b { color: #ffd75e; }
+  #crosshair { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; display: none; }
+  #crosshair.show { display: block; }
+  #crosshair::before, #crosshair::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 3px #000; }
+  #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #crosshair::after { left: 0; top: 8px; width: 18px; height: 2px; }
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: linear-gradient(160deg, rgba(30, 12, 40, 0.88), rgba(120, 40, 10, 0.82)); color: #fff; z-index: 10; }
+  .screen.hidden { display: none; }
+  .card { text-align: center; max-width: 560px; padding: 28px 36px; }
+  .card h1 { margin: 0; font-size: 58px; letter-spacing: 4px; color: #ffd75e; text-shadow: 0 4px 0 #b3541e, 0 8px 24px rgba(0,0,0,0.6); }
+  .card h1 span { color: #ff6b4a; }
+  .card .tag { margin: 6px 0 18px; font-size: 15px; letter-spacing: 3px; color: #ffd9a0; text-transform: uppercase; }
+  .card p { font-size: 15px; line-height: 1.55; color: #f3e9dc; }
+  .card .controls { font-size: 13.5px; line-height: 1.8; color: #d8cdbd; margin: 14px 0 20px; }
+  .card .controls b { color: #fff; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 1px 7px; font-size: 12.5px; }
+  button { pointer-events: auto; cursor: pointer; font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #241207; background: linear-gradient(180deg, #ffd75e, #ff9a3d); border: none; border-radius: 10px; padding: 12px 30px; margin: 4px; box-shadow: 0 4px 0 #b3541e, 0 8px 18px rgba(0,0,0,0.45); }
+  button:hover { filter: brightness(1.07); }
+  button.ghost { background: rgba(255,255,255,0.12); color: #fff; box-shadow: none; border: 1px solid rgba(255,255,255,0.35); }
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
+<canvas id="game" aria-label="Sunset Bay: an open-world crime game. Drive, steal cars, outrun the police and finish Mama Rosa's jobs."></canvas>
+<div id="hud">
+  <div id="topleft" class="panel">
+    <div id="stars" aria-label="Wanted level"></div>
+    <div id="cash">$0</div>
+    <div id="healthwrap"><div id="health"></div></div>
+  </div>
+  <div id="minimapwrap" class="panel"><canvas id="minimap" width="220" height="220"></canvas></div>
+  <div id="objective" class="panel"><h2 id="objtitle">Sunset Bay</h2><p id="objtext">Press Enter to start.</p></div>
+  <div id="speedo" class="panel"><div id="speed">0 <small>mph</small></div><div id="vehiclename">On foot</div></div>
+  <div id="message" class="panel"></div>
+  <div id="prompt" class="panel"></div>
+  <div id="crosshair"></div>
+</div>
+<div id="screen-title" class="screen">
+  <div class="card">
+    <h1>SUNSET <span>BAY</span></h1>
+    <div class="tag">An open-world crime story</div>
+    <p>Rico Vega is back in Sunset Bay with empty pockets and a fast reputation.
+    Mama Rosa has five jobs for you — pickups, getaways, a stolen Comet GT and one
+    last score. Steal cars, lose the cops, and don't get busted.</p>
+    <div class="controls">
+      <b>W A S D</b> move / drive &nbsp; <b>Mouse drag</b> camera &nbsp; <b>E</b> enter / steal car &nbsp; <b>Click</b> shoot<br>
+      <b>Space</b> handbrake &nbsp; <b>Shift</b> run &nbsp; <b>P</b> pause &nbsp; <b>M</b> mute &nbsp; <b>Enter</b> start
+    </div>
+    <button id="btn-start">START THE STORY</button>
+    <button id="btn-continue" class="ghost">CONTINUE</button>
+    <p id="title-best" style="font-size:13px;color:#d8cdbd"></p>
+  </div>
+</div>
+<div id="screen-pause" class="screen hidden">
+  <div class="card">
+    <h1 style="font-size:40px">PAUSED</h1>
+    <p>Take a breath. The cops wait for no one, but the pause menu does.</p>
+    <button id="btn-resume">RESUME</button>
+    <button id="btn-save" class="ghost">SAVE GAME</button>
+    <button id="btn-restart-mission" class="ghost">RESTART MISSION</button>
+    <button id="btn-quit" class="ghost">QUIT TO TITLE</button>
+  </div>
+</div>
+<div id="screen-end" class="screen hidden">
+  <div class="card">
+    <h1 id="end-title" style="font-size:44px">BUSTED</h1>
+    <p id="end-text"></p>
+    <button id="btn-again">PLAY AGAIN</button>
+    <button id="btn-title" class="ghost">TITLE SCREEN</button>
+  </div>
+</div>
 <p id="status" role="status" aria-live="polite"></p>
 <script type="module" src="./src/main.js"></script>
 </body>

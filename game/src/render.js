@@ -1,141 +1,234 @@
-// Drawing only: the world's state and the current screen in, pixels out. The 1280x720 playfield
-// is scaled to fit the window and centred, the margin filled with the backdrop colour. Flat
-// rectangles and circles, canvas text for the HUD and the panels. Text that holds a number is
-// rebuilt only when the number changes, so a frame allocates nothing.
-import { FIELD, FONT, LIVES, PALETTE } from './config.js';
-import { KIND_COIN } from './world.js';
+// The three.js stage: renderer, sun-soaked lighting, the follow camera, and the
+// mesh factories every moving thing is built from. Nothing here knows the rules
+// of the game: it is given a focus to follow and meshes to place.
+import * as THREE from '../vendor/three.module.min.js';
+import { PALETTE } from './config.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
 export const SCREEN_PAUSED = 'paused';
 export const SCREEN_OVER = 'over';
 
-/** The panel's width; its height grows with its lines: room for the title, the lines and the prompt. */
-const PANEL = { width: 600, top: 134, line: 34, bottom: 70 };
-const LIFE_SIZE = 20;
-const LIFE_GAP = 8;
-
-function cachedLabel(prefix) {
-  let value = -1;
-  let text = '';
-  return function label(next) {
-    if (next !== value) {
-      value = next;
-      text = prefix + next;
-    }
-    return text;
-  };
-}
+const CAMERA_FOV = 62;
 
 export function createRenderer(canvas) {
-  const context = canvas.getContext('2d');
-  const view = { scale: 1, x: 0, y: 0 };
-  const scoreLabel = cachedLabel('Score ');
-  const levelLabel = cachedLabel('Level ');
-  const finalLabel = cachedLabel('Score ');
-  const bestLabel = cachedLabel('Best ');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(PALETTE.sky);
+  scene.fog = new THREE.Fog(PALETTE.fog, 140, 460);
+
+  // Late-afternoon sun: warm from the west, soft sky bounce from below.
+  const hemi = new THREE.HemisphereLight(0xfff2d8, 0x8a7a66, 1.0);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(PALETTE.sun, 1.7);
+  sun.position.set(140, 200, 70);
+  scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xbfd8ff, 0.35);
+  fill.position.set(-100, 80, -120);
+  scene.add(fill);
+
+  const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 1000);
+
+  let yaw = 0;
+  let pitch = 0.34;
+  let distance = 13;
+  let current = new THREE.Vector3(0, 8, 16);
 
   function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    const width = Math.round(window.innerWidth * ratio);
-    const height = Math.round(window.innerHeight * ratio);
-    canvas.width = width;
-    canvas.height = height;
-    view.scale = Math.min(width / FIELD.width, height / FIELD.height);
-    view.x = (width - FIELD.width * view.scale) / 2;
-    view.y = (height - FIELD.height * view.scale) / 2;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
   }
 
-  const fonts = new Map();
-  function text(value, x, y, size, color, align) {
-    if (!fonts.has(size)) fonts.set(size, `${size}px ${FONT}`);
-    context.font = fonts.get(size);
-    context.fillStyle = color;
-    context.textAlign = align;
-    context.fillText(value, x, y);
+  // The camera chases a point behind the focus: on foot it orbits freely with
+  // the mouse, in a car it settles behind the car's heading and the drag only
+  // nudges it, so driving never spins the view away.
+  function updateCamera(focus, dt, drag) {
+    yaw -= drag.x * 0.004;
+    pitch = Math.max(0.12, Math.min(0.9, pitch + drag.y * 0.003));
+    if (focus.driving) {
+      let dy = focus.heading - yaw;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      yaw += dy * Math.min(1, dt * 1.6);
+      distance += (13.5 - distance) * Math.min(1, dt * 2);
+    } else {
+      distance += (9.5 - distance) * Math.min(1, dt * 2);
+    }
+    const height = distance * Math.sin(pitch) + 1.2;
+    const back = distance * Math.cos(pitch);
+    const target = new THREE.Vector3(
+      focus.x - Math.sin(yaw) * back,
+      height,
+      focus.z - Math.cos(yaw) * back,
+    );
+    const k = Math.min(1, dt * 7);
+    current.lerp(target, k);
+    camera.position.copy(current);
+    camera.lookAt(focus.x, 1.6, focus.z);
   }
 
-  function drawField(state) {
-    context.fillStyle = PALETTE.sky;
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
-    context.fillStyle = PALETTE.ground;
-    context.fillRect(0, FIELD.groundY, FIELD.width, FIELD.height - FIELD.groundY);
-
-    const items = state.items;
-    for (let index = 0; index < items.length; index += 1) {
-      const item = items[index];
-      if (!item.active) continue;
-      if (item.kind === KIND_COIN) {
-        context.fillStyle = PALETTE.coin;
-        context.beginPath();
-        context.arc(item.x + item.width / 2, item.y + item.height / 2, item.width / 2, 0, Math.PI * 2);
-        context.fill();
-      } else {
-        context.fillStyle = PALETTE.block;
-        context.fillRect(item.x, item.y, item.width, item.height);
-      }
-    }
-
-    const player = state.player;
-    // Blink while invulnerable after a hit: hidden on every other tenth of a second.
-    if (player.invulnerable === 0 || Math.floor(player.invulnerable * 10) % 2 === 1) {
-      context.fillStyle = PALETTE.player;
-      context.fillRect(player.x, player.y, player.width, player.height);
-    }
+  function setCameraBehind(x, z, heading) {
+    yaw = heading;
+    pitch = 0.34;
+    const back = 13 * Math.cos(pitch);
+    current.set(x - Math.sin(yaw) * back, 13 * Math.sin(pitch) + 1.2, z - Math.cos(yaw) * back);
+    camera.position.copy(current);
+    camera.lookAt(x, 1.6, z);
   }
 
-  function drawHud(state) {
-    context.textBaseline = 'top';
-    text(scoreLabel(state.score), 24, 20, 28, PALETTE.text, 'left');
-    text(levelLabel(state.level), FIELD.width / 2, 20, 28, PALETTE.text, 'center');
-    const firstLife = FIELD.width - 24 - LIVES * (LIFE_SIZE + LIFE_GAP) + LIFE_GAP;
-    text('Lives', firstLife - 12, 20, 28, PALETTE.text, 'right');
-    for (let life = 0; life < LIVES; life += 1) {
-      context.fillStyle = life < state.lives ? PALETTE.player : PALETTE.ground;
-      context.fillRect(firstLife + life * (LIFE_SIZE + LIFE_GAP), 24, LIFE_SIZE, LIFE_SIZE);
-    }
+  function forward() {
+    return { x: Math.sin(yaw), z: Math.cos(yaw) };
   }
 
-  function drawPanel(title, lines, prompt) {
-    const height = PANEL.top + lines.length * PANEL.line + PANEL.bottom;
-    const x = (FIELD.width - PANEL.width) / 2;
-    const y = (FIELD.height - height) / 2;
-    context.fillStyle = PALETTE.panel;
-    context.fillRect(x, y, PANEL.width, height);
-    context.textBaseline = 'alphabetic';
-    text(title, FIELD.width / 2, y + 78, 48, PALETTE.text, 'center');
-    for (let index = 0; index < lines.length; index += 1) {
-      text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 22, PALETTE.muted, 'center');
-    }
-    text(prompt, FIELD.width / 2, y + height - 40, 24, PALETTE.coin, 'center');
+  // Project a world point to screen pixels so the HUD can draw the mission
+  // marker over the waypoint. Returns null when the point is behind the camera.
+  const screenVector = new THREE.Vector3();
+  function worldToScreen(x, z, y) {
+    screenVector.set(x, y ?? 1, z).project(camera);
+    if (screenVector.z > 1) return null;
+    return {
+      x: (screenVector.x * 0.5 + 0.5) * window.innerWidth,
+      y: (-screenVector.y * 0.5 + 0.5) * window.innerHeight,
+    };
   }
 
-  const TITLE_LINES = ['Dodge the red blocks. Catch the gold coins.', 'Move with ← → or A D.  Pause with P.', ''];
-  const PAUSED_LINES = ['The blocks will wait for you.'];
-  const OVER_LINES = ['', ''];
-
-  /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
-  function draw(state, screen, best) {
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.backdrop;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawField(state);
-    if (screen === SCREEN_TITLE) {
-      TITLE_LINES[2] = bestLabel(best);
-      drawPanel('Block Dodger', TITLE_LINES, 'Press Space or click to start');
-      return;
-    }
-    drawHud(state);
-    if (screen === SCREEN_PAUSED) drawPanel('Paused', PAUSED_LINES, 'Press P to resume');
-    else if (screen === SCREEN_OVER) {
-      OVER_LINES[0] = finalLabel(state.score);
-      OVER_LINES[1] = bestLabel(best);
-      drawPanel('Game over', OVER_LINES, 'Press Space or click to play again');
-    }
+  function render() {
+    renderer.render(scene, camera);
   }
 
   resize();
   window.addEventListener('resize', resize);
-  return { draw };
+  return { scene, camera, resize, updateCamera, setCameraBehind, forward, render, worldToScreen };
+}
+
+// A car from boxes: body, cabin, four wheels, headlights and taillights. The
+// kind changes the silhouette: 'comet' is low and long with a spoiler, 'taxi'
+// wears the yellow cab paint, 'police' carries the light bar.
+export function makeCarMesh(color, kind) {
+  const group = new THREE.Group();
+  const paint = new THREE.MeshLambertMaterial({ color });
+  const glass = new THREE.MeshLambertMaterial({ color: 0x1c2733 });
+  const tyre = new THREE.MeshLambertMaterial({ color: 0x141414 });
+  const lightFront = new THREE.MeshLambertMaterial({ color: 0xfff2b0, emissive: 0xffe9a0 });
+  const lightRear = new THREE.MeshLambertMaterial({ color: 0xd84040, emissive: 0x881111 });
+
+  const low = kind === 'comet';
+  const bodyH = low ? 0.55 : 0.8;
+  const bodyY = low ? 0.55 : 0.72;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, bodyH, 4.5), paint);
+  body.position.y = bodyY;
+  group.add(body);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, low ? 0.5 : 0.72, 2.3), glass);
+  cabin.position.set(0, bodyY + bodyH / 2 + (low ? 0.25 : 0.34), low ? -0.25 : -0.3);
+  group.add(cabin);
+
+  const wheelGeometry = new THREE.CylinderGeometry(0.36, 0.36, 0.28, 10);
+  wheelGeometry.rotateZ(Math.PI / 2);
+  const wheelSpots = [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.45], [0.95, -1.45]];
+  const wheels = [];
+  for (const [wx, wz] of wheelSpots) {
+    const wheel = new THREE.Mesh(wheelGeometry, tyre);
+    wheel.position.set(wx, 0.36, wz);
+    group.add(wheel);
+    wheels.push(wheel);
+  }
+
+  for (const side of [-0.6, 0.6]) {
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.1), lightFront);
+    head.position.set(side, bodyY, 2.28);
+    group.add(head);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.18, 0.1), lightRear);
+    tail.position.set(side, bodyY, -2.28);
+    group.add(tail);
+  }
+
+  if (kind === 'comet') {
+    const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.08, 0.4), paint);
+    spoiler.position.set(0, 1.05, -2.1);
+    group.add(spoiler);
+  }
+
+  let barRed = null;
+  let barBlue = null;
+  if (kind === 'police') {
+    barRed = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.22, 0.3),
+      new THREE.MeshLambertMaterial({ color: 0xff2a2a, emissive: 0xff0000 }),
+    );
+    barRed.position.set(-0.4, 1.42, -0.3);
+    group.add(barRed);
+    barBlue = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.22, 0.3),
+      new THREE.MeshLambertMaterial({ color: 0x2a6aff, emissive: 0x0033ff }),
+    );
+    barBlue.position.set(0.4, 1.42, -0.3);
+    group.add(barBlue);
+  }
+
+  // A puff of smoke the game shows when the car is badly hurt.
+  const smoke = new THREE.Mesh(
+    new THREE.SphereGeometry(0.7, 8, 6),
+    new THREE.MeshLambertMaterial({ color: 0x555555, transparent: true, opacity: 0.0 }),
+  );
+  smoke.position.set(0, 1.2, 1.6);
+  group.add(smoke);
+
+  return { group, wheels, barRed, barBlue, smoke };
+}
+
+// A person from boxes: legs, torso, head, arms. The shirt colour is the only
+// thing that changes between pedestrians, the player and the rival crew.
+export function makePersonMesh(shirtColor, skinColor) {
+  const group = new THREE.Group();
+  const shirt = new THREE.MeshLambertMaterial({ color: shirtColor });
+  const skin = new THREE.MeshLambertMaterial({ color: skinColor || 0xc98d64 });
+  const pants = new THREE.MeshLambertMaterial({ color: 0x2b3440 });
+
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.8, 0.24), pants);
+  legL.position.set(-0.14, 0.4, 0);
+  group.add(legL);
+  const legR = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.8, 0.24), pants);
+  legR.position.set(0.14, 0.4, 0);
+  group.add(legR);
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.72, 0.34), shirt);
+  torso.position.y = 1.16;
+  group.add(torso);
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.62, 0.18), shirt);
+  armL.position.set(-0.4, 1.14, 0);
+  group.add(armL);
+  const armR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.62, 0.18), shirt);
+  armR.position.set(0.4, 1.14, 0);
+  group.add(armR);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), skin);
+  head.position.y = 1.72;
+  group.add(head);
+  const hair = new THREE.Mesh(new THREE.SphereGeometry(0.27, 10, 8), new THREE.MeshLambertMaterial({ color: 0x1c1210 }));
+  hair.position.y = 1.8;
+  hair.scale.set(1, 0.6, 1);
+  group.add(hair);
+
+  return { group, legL, legR, armL, armR };
+}
+
+// The mission waypoint: a tall beam of light and a ring on the ground, pulsing.
+export function makeBeaconMesh(color) {
+  const group = new THREE.Group();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.6, 1.6, 34, 12, 1, true),
+    new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.22, side: THREE.DoubleSide, emissive: color }),
+  );
+  beam.position.y = 17;
+  group.add(beam);
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(2.4, 0.18, 8, 28),
+    new THREE.MeshLambertMaterial({ color, emissive: color }),
+  );
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = 0.25;
+  group.add(ring);
+  return { group, beam, ring };
 }
